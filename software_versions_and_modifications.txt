@@ -1,0 +1,9 @@
+Python 3.8.8
+
+numpy 1.20.1
+pandas 1.2.4
+pyswarm 0.6 (modified to accept starting points and stopping condition on the value of objective function)
+scipy 1.6.2 (_differentialevolution.py was modified to allow for stopping condition on function value)
+matplotlib 3.3.4
+scikit-learn 0.24.1
+QuantLib 1.22

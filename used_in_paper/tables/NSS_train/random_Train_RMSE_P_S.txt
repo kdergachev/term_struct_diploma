@@ -1,0 +1,11 @@
+\begin{tabular}{lrrrrrrr}
+\toprule
+{} &   min &  0.25 &  median &  0.75 &   max &  mean &  stdev \\
+\midrule
+Nelder-Mead    &  0.07 &  0.18 &    0.21 &  0.28 &  0.45 &  0.23 &   0.07 \\
+Diff\_evo       &  0.08 &  0.17 &    0.22 &  0.27 &  0.38 &  0.22 &   0.07 \\
+COBYLA         &  0.04 &  0.17 &    0.23 &  0.32 &  0.42 &  0.23 &   0.09 \\
+Dual\_annealing &  0.04 &  0.16 &    0.19 &  0.26 &  0.65 &  0.21 &   0.09 \\
+L-BFGS-B       &  0.04 &  0.15 &    0.19 &  0.25 &  0.37 &  0.20 &   0.08 \\
+\bottomrule
+\end{tabular}

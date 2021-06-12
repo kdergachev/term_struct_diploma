@@ -2,6 +2,7 @@
 import datetime
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 from table_prep import *
@@ -31,7 +32,7 @@ def plot_model(model, theta):
     return [x, y]
 
 
-def bound_theta(theta, low, high):
+def bound_theta(theta, low, high, constr):
     """
     Returns theta inside bounds if the one obtained is outside.
     Constraints are dealt with in init_points(), but bounds throw an exception
@@ -41,8 +42,10 @@ def bound_theta(theta, low, high):
     theta[msk] = low[msk]
     msk = theta > high
     theta[msk] = high[msk]
+    if constr(theta) < 0:
+        theta[0] = 0.01
+        theta[1] = 0.01
     return theta
-
 
 
 
@@ -76,7 +79,7 @@ def Rsquared(P, Phat):
     TSS = TSS.dot(TSS.transpose())
     return 1 - RSS/TSS
 
-fail = False
+
 def get_results(algos,
                 model=NSS,
                 use_past_points=True,
@@ -89,10 +92,32 @@ def get_results(algos,
                 weight=False,
                 save_st=True,
                 do_plots=True,
+                stopping=0,
                 folder="test",
                 _where=r"D:\dipl"):
     """
     A function to combine optimization and table_prep and get a table with optimization results
+    Parameters
+    ----------
+    algos: dictionary with algorithm name: algorithm function structure
+    model: function to be used as time, theta -> rate
+    use_past_points: select how starting points are generated (True - around past best, False - random, "DL" - Diebold-Li)
+    objective_var: variable to optimize over "Price" or "Yield" latter was not done in paper
+    spec: used in DL to get starting points pretty much "NSS_red": [b_0, b_1, tau, b_2]; [b_0, b_1, tau_1, b_2, tau_2] o/w
+    mask: positions of bounds important to optimizaton, only lower are checked so e.g b_0, tau_1, tau_2 are all > 0
+    bounds: bounds for point generation and algorithms where required
+    pointsamt: number of points to be used in optimization
+    miter: maximum amount of iterations, in paper considered the main stopping parameter
+    weight: True - use inverse duration weighting in loss
+    save_st: True - save starting points in a folder
+    do_plots: True - save P-Phat and maturity-rate plots in a folder
+    stopping: 0 - full optimization, 1 - as described in the paper, can be other values - just rescales value of a "good enough" solution
+    folder: how to all a folder in _where/results where the results are saved
+    _where: path to the folder with results and data folders
+
+    Returns
+    DataFrame with the results of optimizations, with some parameters saves stuff along the way. Save the return once
+    again as it is not saved after the last iteration
 
     """
 
@@ -112,7 +137,7 @@ def get_results(algos,
 
         if weight:
             # harmonic mean
-            _correction = len(train["Duration"])/((((1/train["Duration"]).sum())/(1/train["Duration"])).sum())
+            _correction = 1.25*len(train["Duration"])/((((1/train["Duration"]).sum())/(1/train["Duration"])).sum())
         else:
             _correction = 1
 
@@ -123,8 +148,10 @@ def get_results(algos,
         # get D-L starting points
         if use_past_points == "DL":
             best_theta = DL_starting(train, spec)
-            if (best_theta < low).any() | (best_theta > high).any():
-                best_theta = bound_theta(best_theta, low, high)
+            print(best_theta)
+            if (best_theta < low).any() | (best_theta > high).any() | (con(best_theta) < 0).any():
+                best_theta = bound_theta(best_theta, low, high, con)
+                print(best_theta)
         # prep objective and starting points
         obj = partial(costfunc, table=train, rmodel=model, loss=sqresid, weighted=weight)
         dst = partial(uneven_distr, where=best_theta)
@@ -155,13 +182,7 @@ def get_results(algos,
             timer = time.process_time_ns()
             res = alg(obj, low, high,
                       debug=False, f_ieqcons=con, maxiter=miter, swarmsize=pointsamt, st_points=start,
-                      stopping=0, mask=mask)
-
-            # TODO see whether is important or old version
-            if (res[0] < bounds[0]).any() | (res[0] > bounds[1]).any():
-                print("Out of bounds", res[0])
-                global fail
-                fail = True
+                      stopping=stopping * 0.05 * _correction*train.shape[0], mask=mask)
             timer = time.process_time_ns() - timer
 
             if res[1] >= 1e+10: #failure to get any results
@@ -176,9 +197,15 @@ def get_results(algos,
             pest = partial(P_estimate, rfunc=resNS)
             tbl["Phat"] = tbl.apply(lambda x: pest(x["Cpn"], x["Par Amt"], x["Time Adj"]), 1)
             tbl["Yhat"] = tbl.apply(lambda x: resNS(x["Tenor"]), 1)
+            if (stopping > 0) & ~np.isinf(res[3]):
+                resNSrestr = partial(model, theta=res[2])
+                pestr = partial(P_estimate, rfunc=resNSrestr)
+                tbl["Phatr"] = tbl.apply(lambda x: pestr(x["Cpn"], x["Par Amt"], x["Time Adj"]), 1)
+                tbl["Yhatr"] = tbl.apply(lambda x: resNSrestr(x["Tenor"]), 1)
 
             # This allows to iteratively fill train, test and combined versions of results
             helperdict = {"Train": False, "Test": True, "Combined": None}
+            # populate result table
             for k, v in helperdict.items():
                 temptbl = tbl[~(tbl["Train"] == v)]
                 row = {"Date": day,
@@ -208,6 +235,32 @@ def get_results(algos,
                        "RMSE_YTM_L": RMSE(temptbl.loc[temptbl["Tenor"] > 10, "YTM"],
                                         temptbl.loc[temptbl["Tenor"] > 10, "Yhat"])
                        }
+
+                if stopping > 0:
+                    if ~np.isinf(res[3]):
+                        row.update({
+                            "Time_R": res[3],
+                            "Theta_R": res[2],
+                            "RMSE_P_R": RMSE(temptbl["Midpoint"], temptbl["Phatr"]),
+                            "RMSE_YTM_R": RMSE(temptbl["Yhatr"], temptbl["YTM"]),
+                            "RMSE_P_S_R": RMSE(temptbl.loc[temptbl["Tenor"] <= 3, "Midpoint"],
+                                             temptbl.loc[temptbl["Tenor"] <= 3, "Phatr"]),
+                            "RMSE_P_M_R": RMSE(temptbl.loc[(temptbl["Tenor"] > 3) & (temptbl["Tenor"] <= 10), "Midpoint"],
+                                             temptbl.loc[(temptbl["Tenor"] > 3) & (temptbl["Tenor"] <= 10), "Phatr"]),
+                            "RMSE_P_L_R": RMSE(temptbl.loc[temptbl["Tenor"] > 10, "Midpoint"],
+                                             temptbl.loc[temptbl["Tenor"] > 10, "Phatr"]),
+                            "RMSE_YTM_S_R": RMSE(temptbl.loc[temptbl["Tenor"] <= 3, "YTM"],
+                                               temptbl.loc[temptbl["Tenor"] <= 3, "Yhatr"]),
+                            "RMSE_YTM_M_R": RMSE(temptbl.loc[(temptbl["Tenor"] > 3) & (temptbl["Tenor"] <= 10), "YTM"],
+                                               temptbl.loc[(temptbl["Tenor"] > 3) & (temptbl["Tenor"] <= 10), "Yhatr"]),
+                            "RMSE_YTM_L_R": RMSE(temptbl.loc[temptbl["Tenor"] > 10, "YTM"],
+                                               temptbl.loc[temptbl["Tenor"] > 10, "Yhatr"])
+                        })
+                    else:
+                        row.update({i:np.nan for i in ["Time_R", "Theta_R", "RMSE_P_R", "RMSE_YTM_R", "RMSE_P_S_R"
+                                                       "RMSE_P_M_R", "RMSE_P_L_R", "RMSE_YTM_S_R", "RMSE_YTM_M_R",
+                                                       "RMSE_YTM_L_R"]})
+
                 print(row["Loss_P"], row["N"], row["Time"])
                 outdf = outdf.append(row, ignore_index=True)
 
@@ -236,7 +289,7 @@ def get_results(algos,
             print(temp)
             best_theta = temp["Theta"].item()
             if (best_theta < low).any() | (best_theta > high).any():
-                best_theta = bound_theta(best_theta, low, high)
+                best_theta = bound_theta(best_theta, low, high, con)
             print(best_theta)
 
     return outdf
@@ -246,23 +299,25 @@ def get_results(algos,
 algdict = {"Nelder-Mead": nelder_mead, "Diff_evo": diff_evo, "COBYLA": COBYLA,
            "Dual_annealing": d_annealing, "L-BFGS-B": LBFGSB}
 
+# Done
 a = get_results(algdict,
                 model=NSS_red,
-                use_past_points="DL",
+                use_past_points=True,
                 spec="NSS_red",
                 objective_var="Price",
                 bounds=[np.array([0, -5, 0.001, -20]), np.array([10, 35, 35, 35])],
                 mask=[0,2],
                 pointsamt=400,
                 miter=200,
+                weight=True,
                 save_st=True,
-                weight=False,
+                stopping=1,
                 do_plots=False,
-                folder="DL_points_price_NSS",
+                folder="past_points_price_NSS_w_double",
                 _where=r"D:\dipl")
-a.to_csv(r"D:\dipl\results" + "\\DL_points_price_NSS\\" + "result_fin")
-# *_points_price_NSS good1
+a.to_csv(r"D:\dipl\results" + "\\past_points_price_NSS_w_double\\" + "result_fin")
 
+# Done
 a = get_results(algdict,
                 model=NSS_red,
                 use_past_points=False,
@@ -274,25 +329,31 @@ a = get_results(algdict,
                 miter=200,
                 weight=True,
                 save_st=True,
+                stopping=1,
                 do_plots=False,
-                folder="random_points_price_NSS_w_free",
+                folder="random_points_price_NSS_w_double",
                 _where=r"D:\dipl")
-a.to_csv(r"D:\dipl\results" + "\\random_points_price_NS_w\\" + "result_fin")
-# *_points_price_NSS_w good2
+a.to_csv(r"D:\dipl\results" + "\\random_points_price_NSS_w_double\\" + "result_fin")
 
-strtp = np.load(r"D:\dipl\results\past_points_price\201127\St_points.npy")
+# Done
+a = get_results(algdict,
+                model=NSS_red,
+                use_past_points="DL",
+                spec="NSS_red",
+                objective_var="Price",
+                bounds=[np.array([0, -5, 0.001, -20]), np.array([10, 35, 35, 35])],
+                mask=[0,2],
+                pointsamt=400,
+                miter=200,
+                weight=True,
+                save_st=True,
+                stopping=1,
+                do_plots=False,
+                folder="DL_points_price_NSS_w_double",
+                _where=r"D:\dipl")
+a.to_csv(r"D:\dipl\results" + "\\DL_points_price_NSS_w_double\\" + "result_fin")
 
 
-
-
-
-
-
-
-
-
-
-
-
+# strtp = np.load(r"D:\dipl\results\past_points_price\201127\St_points.npy")
 
 

@@ -156,6 +156,13 @@ def clean_xl(filename):
     table.loc[table_mask, "Bid Price"] = table.loc[table_mask, "Par Amt"] * (
                 1 - (table.loc[table_mask, "Bid Price"] / 100)
                 * table.loc[table_mask, "Time Adj"] * adj)
+
+    # dirty price for bonds
+    table.loc[~table_mask, "Bid Price"] = table.loc[~table_mask, "Bid Price"] + table.loc[~table_mask, "Cpn"] \
+                                          * (0.5 - table.loc[~table_mask, "Time Adj"].apply(lambda x: x[0]))
+    table.loc[~table_mask, "Ask Price"] = table.loc[~table_mask, "Ask Price"] + table.loc[~table_mask, "Cpn"] \
+                                          * (0.5 - table.loc[~table_mask, "Time Adj"].apply(lambda x: x[0]))
+
     # put tenors for bills in lists to use in functions later
     table.loc[table_mask, "Time Adj"] = table.loc[table_mask, "Time Adj"].apply(lambda x: [x], 1)
     # add midpoint column
@@ -178,11 +185,14 @@ if __name__ == "__main__":
     sss = datetime.strptime(tryon, "%y%m%d")
     populate_coupons(test.iloc[71, ], sss)
 
-    # semi annual test
+    # to save used data
     for i in os.listdir():
-        print(i)
         test = clean_xl(i)
-        if (test["Par Amt"] == 100).any():
+        test = test[["Issuer Name", "Cpn", "Par Amt", "Time Adj", "Midpoint", "YTM", "Tenor", "Duration"]]
+        name = "D:/dipl/data_mod/" + i + ".xlsx"
+        test.to_excel(name)
+        # this was used to ensure there are any non 100$ par securities
+        if (test["Par Amt"] == 100).all():
             pass
         else:
             print(i, "wrong")

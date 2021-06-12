@@ -12,13 +12,28 @@ from scipy._lib._util import check_random_state, MapWrapper
 from scipy.optimize._constraints import (Bounds, new_bounds_to_old,
                                          NonlinearConstraint, LinearConstraint)
 from scipy.sparse import issparse
+import time
 
-import math
 
 
 __all__ = ['differential_evolution']
 
 _MACHEPS = np.finfo(np.float64).eps
+
+
+class breaker:
+
+
+    def __init__(self, stopper):
+        self.timer = time.process_time_ns()
+        self.stopper = stopper
+        self.status = True
+        self.results = [np.inf, np.inf]
+
+    def check_stopping(self, val, x):
+        if (val <= self.stopper) & self.status:
+            self.status = False
+            self.results = [x, (time.process_time_ns() - self.timer)/1e+9]
 
 
 
@@ -758,6 +773,7 @@ class DifferentialEvolutionSolver(object):
             self._promote_lowest_energy()
 
         # do the optimization.
+        altres = breaker(self.stopping)
         for nit in range(1, self.maxiter + 1):
             # evolve the population by a generation
             try:
@@ -787,9 +803,7 @@ class DifferentialEvolutionSolver(object):
             if warning_flag or self.converged():
                 break
             ##
-            if self.population_energies[0] <= self.stopping:
-                print("Solution reached", self.stopping, self.population_energies[0])
-                break
+            altres.check_stopping(self.population_energies[0], self.x)
         else:
             status_message = _status_message['maxiter']
             warning_flag = True
@@ -797,6 +811,8 @@ class DifferentialEvolutionSolver(object):
         DE_result = OptimizeResult(
             x=self.x,
             fun=self.population_energies[0],
+            timerestr=altres.results[1],
+            xrestr=altres.results[0],
             nfev=self._nfev,
             nit=nit,
             message=status_message,

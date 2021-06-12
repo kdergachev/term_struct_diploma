@@ -9,6 +9,26 @@ from scipy.stats import truncnorm
 import scipy as sp
 from customized_packages.diff_evo import _differentialevolution as de
 from sklearn import linear_model
+import time
+from customized_packages.dual_annealing import _dual_annealing as da
+
+
+class breaker:
+    """
+    Class used to record result and time of threshold optimization while the full one is executed.
+    start timer on init, each iteration compare result with threshold first time it is lower record time and the result
+    """
+
+    def __init__(self, stopper):
+        self.timer = time.process_time_ns()
+        self.stopper = stopper
+        self.status = True
+        self.results = [np.inf, np.inf]
+
+    def check_stopping(self, val, x):
+        if (val <= self.stopper) & self.status:
+            self.status = False
+            self.results = [x, (time.process_time_ns() - self.timer)/1e+9]
 
 
 def NSS_red(t, theta):
@@ -23,6 +43,10 @@ def NSS_red(t, theta):
            beta * ((1 - math.exp(-t / tau)) / (t / tau) - math.exp(-t / tau))
 
 def NS_red(t, theta):
+    """
+    NS model with restrictions against multicollinearity
+
+    """
     tau = theta[2] + 1
     return theta[0] + theta[1] * ((1 - math.exp(-t / theta[2])) / (t / theta[2])) + \
            theta[3] * ((1 - math.exp(-t / tau)) / (t / tau) - math.exp(-t / tau))
@@ -96,28 +120,13 @@ def cost(theta, table, rmodel, loss, weighted=False):
         Phat = table.apply(lambda x: wrap_model(x, model=rmodel), 1)
     except OverflowError:
         Phat = 1.797e+100
-    P = (table["Ask Price"] + table["Bid Price"])/2
+    P = table["Midpoint"]
     if weighted:
         return loss(P, Phat, (1/table["Duration"])/((1/table["Duration"]).sum()))
     return loss(P, Phat)
 
 # ss = lambda theta: cost(test, NSS, sqersid, theta)
 # pso(ss)
-
-def YTMcost(theta, table, rmodel, loss):
-    """
-    Not used but should work:
-    Same as cost but with YTM rather than price + no weighting and loss is multiplied by 1000 for readability
-
-    """
-
-    rmodel = partial(rmodel, theta=theta)
-    try:
-        Yhat = table.apply(lambda x: rmodel(x["Tenor"]), 1)
-    except OverflowError:
-        Yhat = 1.797e+100
-    Y = table["YTM"]
-    return 1000*loss(Y, Yhat)
 
 
 def RMSE(P, Phat):
@@ -132,7 +141,7 @@ def RMSE(P, Phat):
 
 def DL_starting(table, spec):
     """
-    Supply table - get parameters similar to Diebold-Li procedure, without bootstrapping or zero-coupon bonds though
+    Supply table - get parameters similar to Diebold-Li procedure, without bootstrapping or zero-coupon bonds though.
     spec allows for different model specifications
 
     """
@@ -177,7 +186,7 @@ def init_points(lb, ub, size, cnstrt=None, distr=None):
     x = distr(size)
     x = np.tile(lb, (size, 1)) + np.multiply(x, np.tile((ub-lb), (size, 1)))
     # correct the ones not satisfying constraints
-    for i in range(size):
+    for i in range(1, size):
         while np.all(cnstrt(x[i, ]) < 0):
             x[i, ] = distr(1)
             x[i, ] = lb + x[i, ] * (ub - lb)
@@ -204,6 +213,7 @@ def uneven_distr(size, where, lb, ub, scale=1):
             # can rescale the scale. have to do some more work to change functional dependence
             scalemod = (0.4/(0.5 - abs(temp - 0.5) + 0.5))*scale
             result[:, i] = truncnorm.rvs((-temp) / scalemod, (1 - temp) / scalemod, temp, scalemod, size)
+    result[0, ~np.isinf(where_unit)] = where_unit[~np.isinf(where_unit)]
     return result
 
 # !!!!!!!!!!!!!!
@@ -216,14 +226,14 @@ def diff_evo(obj, low, high, debug, f_ieqcons, maxiter, swarmsize, st_points, st
 
     bounds = [(low[i], high[i]) for i in range(len(low))]
     constr = sp.optimize.NonlinearConstraint(f_ieqcons, 0, np.inf)
-    res = de.differential_evolution(obj, bounds, strategy=strat, maxiter=maxiter, popsize=swarmsize,
+    res = de.differential_evolution(obj, bounds, strategy=strat, maxiter=math.ceil(0.8*maxiter), popsize=swarmsize,
                                     disp=debug, init=st_points, constraints=(constr), stopping=stopping)
-    res = [res["x"], res["fun"]]
+    res = [res["x"], res["fun"], res["xrestr"], res["timerestr"]]
     return res
 
 
 
-def wrap_const(val, low, high, obj, con, mask=[0, 2]):
+def wrap_const(val, low, high, obj, con, mask=[0, 2], _da=False):
     """
     Change objective function to punish for important constraint violation.
     Takes theta, upper, lower bounds, objective function, constraints and mask as the one before. Returns merit function
@@ -240,8 +250,103 @@ def wrap_const(val, low, high, obj, con, mask=[0, 2]):
         penalty += sum(lowm[msk] - valm[msk])
     elif con(val) < 0:
         penalty += -con(val)
-
+        if da:
+            penalty = penalty + 1000
     return obj(val) + penalty
+
+
+def check_domain(val, low, high, cons, mask=[0, 2]):
+    """
+    Check all important bounds/constraints to save any given result in iterative optimizations.
+
+    """
+    return (val[mask] >= low[mask]).all() & (cons(val) >= 0)
+
+
+def nelder_mead(obj, low, high, debug, f_ieqcons, maxiter, swarmsize, st_points, stopping, mask=[0,2]):
+
+    obj = partial(wrap_const, low=low, high=high, obj=obj, con=f_ieqcons, mask=mask)
+    st_points = st_points[np.random.choice(st_points.shape[0], math.ceil(st_points.shape[0]/len(low)),
+                                           replace=False), :]
+
+    res = [0, 1e+10, np.inf, np.inf]
+    altres = breaker(stopping)
+    for st in st_points:
+        #simplex = generate_simplex(st, low, high)
+        sol = sp.optimize.minimize(obj, st, method="Nelder-Mead", options={"disp": debug, "maxiter": maxiter})
+        if (sol["fun"] < res[1]) & check_domain(sol["x"], low, high, f_ieqcons, mask=mask):
+            res[0], res[1] = [sol["x"], sol["fun"]]
+        altres.check_stopping(sol["fun"], sol["x"])
+        res[2], res[3] = altres.results
+    return res
+
+
+
+def d_annealing(obj, low, high, debug, f_ieqcons, maxiter, swarmsize, st_points, stopping, mask=[0,2]):
+
+    maxiter = int(maxiter*14)
+    obj = partial(wrap_const, low=low, high=high, obj=obj, con=f_ieqcons, mask=mask, _da=True)
+    st_points = st_points[0, :]
+    sol = da.dual_annealing(obj, bounds=list(zip(low, high)), maxiter=maxiter, x0=st_points,
+                                     stopping=stopping)
+    res = [sol["x"], sol["fun"], sol["xrestr"], sol["timerestr"]]
+    return res
+
+
+def COBYLA(obj, low, high, debug, f_ieqcons, maxiter, swarmsize, st_points, stopping, mask=[0,2]):
+
+    #obj = partial(wrap_const, low=low, high=high, obj=obj, con=f_ieqcons)
+    constr1 = sp.optimize.NonlinearConstraint(f_ieqcons, 0+0.0002, np.inf)
+    constr2 = sp.optimize.NonlinearConstraint(lambda x: x[mask], low[mask] + 0.0002, np.inf)
+    st_points = st_points[np.random.choice(st_points.shape[0], math.ceil(0.66*st_points.shape[0]),
+                                           replace=False), :]
+    result = [0, 1e+10, np.inf, np.inf]
+    altres = breaker(stopping)
+    for st in st_points:
+        sol = sp.optimize.minimize(obj, st,  constraints=(constr1, constr2), method="COBYLA",
+                                   options={"disp": debug, "maxiter": maxiter})
+        if (sol["fun"] < result[1]) & check_domain(sol["x"], low, high, f_ieqcons, mask=mask):
+            result[0], result[1] = [sol["x"], sol["fun"]]
+        altres.check_stopping(sol["fun"], sol["x"])
+        result[2], result[3] = altres.results
+    return result
+
+
+def LBFGSB(obj, low, high, debug, f_ieqcons, maxiter, swarmsize, st_points, stopping, mask=[0,2]):
+
+    obj = partial(wrap_const, low=low, high=high, obj=obj, con=f_ieqcons, mask=mask)
+    st_points = st_points[
+                np.random.choice(st_points.shape[0], math.ceil(st_points.shape[0] / 2.5), replace=False), :]
+    bounds = [(low[i], high[i]) for i in range(len(low))]
+    result = [0, 1e+10, np.inf, np.inf]
+    altres = breaker(stopping)
+    for st in st_points:
+        sol = sp.optimize.minimize(obj, st, bounds=bounds, method="L-BFGS-B", options={"maxcor": 5, "disp": debug, "maxiter": maxiter})
+        if (sol["fun"] < result[1]) & check_domain(sol["x"], low, high, f_ieqcons, mask=mask):
+            result[0], result[1] = [sol["x"], sol["fun"]]
+        altres.check_stopping(sol["fun"], sol["x"])
+        result[2], result[3] = altres.results
+    return result
+
+
+
+
+
+
+def YTMcost(theta, table, rmodel, loss):
+    """
+    Not used but should work:
+    Same as cost but with YTM rather than price + no weighting and loss is multiplied by 1000 for readability
+
+    """
+
+    rmodel = partial(rmodel, theta=theta)
+    try:
+        Yhat = table.apply(lambda x: rmodel(x["Tenor"]), 1)
+    except OverflowError:
+        Yhat = 1.797e+100
+    Y = table["YTM"]
+    return 1000*loss(Y, Yhat)
 
 
 def generate_simplex(st, low, high, _scale=0.1):
@@ -258,78 +363,6 @@ def generate_simplex(st, low, high, _scale=0.1):
         dir[i] = 1
         simplex[i+1, :] = st + dir*_scale*(high-low)
     return simplex
-
-
-def check_domain(val, low, high, cons, mask=[0, 2]):
-    """
-    Check all important bounds/constraints to save any given result in iterative optimizations.
-
-    """
-    return (val[mask] >= low[mask]).all() & (cons(val) >= 0)
-
-
-def nelder_mead(obj, low, high, debug, f_ieqcons, maxiter, swarmsize, st_points, stopping, mask=[0,2]):
-
-    obj = partial(wrap_const, low=low, high=high, obj=obj, con=f_ieqcons, mask=mask)
-    st_points = st_points[np.random.choice(st_points.shape[0], math.ceil(st_points.shape[0]/(len(low)/2)),
-                                           replace=False), :]
-
-    res = [0, 1e+10]
-    for st in st_points:
-        #simplex = generate_simplex(st, low, high)
-        sol = sp.optimize.minimize(obj, st, method="Nelder-Mead", options={"disp": debug, "maxiter": maxiter})
-        if (sol["fun"] < res[1]) & check_domain(sol["x"], low, high, f_ieqcons, mask=mask):
-            res = [sol["x"], sol["fun"]]
-        if res[1] <= stopping:
-            break
-    return res
-
-
-def d_annealing(obj, low, high, debug, f_ieqcons, maxiter, swarmsize, st_points, stopping, mask=[0,2]):
-
-    obj = partial(wrap_const, low=low, high=high, obj=obj, con=f_ieqcons, mask=mask)
-    res = [0, 1e+10]
-    st_points = st_points[np.random.choice(st_points.shape[0], math.ceil(0.1*st_points.shape[0])), :]
-    for st in st_points:
-        sol = sp.optimize.dual_annealing(obj, bounds=list(zip(low, high)), maxiter=math.floor(maxiter/2), x0=st)
-        if (sol["fun"] < res[1]) & check_domain(sol["x"], low, high, f_ieqcons, mask=mask):
-            res = [sol["x"], sol["fun"]]
-        if res[1] <= stopping:
-            break
-    return res
-
-
-def COBYLA(obj, low, high, debug, f_ieqcons, maxiter, swarmsize, st_points, stopping, mask=[0,2]):
-
-    #obj = partial(wrap_const, low=low, high=high, obj=obj, con=f_ieqcons)
-    constr1 = sp.optimize.NonlinearConstraint(f_ieqcons, 0, np.inf)
-    constr2 = sp.optimize.NonlinearConstraint(lambda x: x[mask], low[mask] + 0.0002, np.inf)
-    result = [0, 1e+10]
-    for st in st_points:
-        sol = sp.optimize.minimize(obj, st,  constraints=(constr1, constr2), method="COBYLA",
-                                   options={"disp": debug, "maxiter": maxiter})
-        if (sol["fun"] < result[1]) & check_domain(sol["x"], low, high, f_ieqcons, mask=mask):
-            result = [sol["x"], sol["fun"]]
-            if result[1] <= stopping:
-                break
-    return result
-
-
-def LBFGSB(obj, low, high, debug, f_ieqcons, maxiter, swarmsize, st_points, stopping, mask=[0,2]):
-
-    obj = partial(wrap_const, low=low, high=high, obj=obj, con=f_ieqcons, mask=mask)
-    st_points = st_points[
-                np.random.choice(st_points.shape[0], math.ceil(st_points.shape[0] / 2), replace=False), :]
-    bounds = [(low[i], high[i]) for i in range(len(low))]
-    result = [0, 1e+10]
-    for st in st_points:
-        sol = sp.optimize.minimize(obj, st, bounds=bounds, method="L-BFGS-B", options={"maxcor": 5, "disp": debug, "maxiter": maxiter})
-        if (sol["fun"] < result[1]) & check_domain(sol["x"], low, high, f_ieqcons, mask=mask):
-            result = [sol["x"], sol["fun"]]
-        if result[1] <= stopping:
-            break
-    return result
-
 
 
 if __name__ == "__main__":

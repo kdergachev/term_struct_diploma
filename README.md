@@ -1,0 +1,4 @@
+# term_struct_diploma
+To be filled out. As for now: 
+The data used was obtained using Bloomberg Terminal. In data_mod one can see the result of modifying the tables colleced using clear_xl function from table_prep file.
+Everything after if __name__ == "main" is just leftovers of tests and not relevant. Scripts for the most part (but not completely) can be executed to get results, but there are still parts left from me executing parts of code in chunks while it was not complete. Main modifications in customized_packages are additions of breaker class objects and stopping argument to get results of fast optimization.

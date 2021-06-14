@@ -142,13 +142,16 @@ def RMSE(P, Phat):
 def DL_starting(table, spec):
     """
     Supply table - get parameters similar to Diebold-Li procedure, without bootstrapping or zero-coupon bonds though.
-    spec allows for different model specifications
+    spec allows for different model specifications. Now unrestriced NS is implemented (spec=None) and
+    restricted NSS (spec=NSS_red)
 
     """
-
+    # loading 1
     X = table.apply(lambda t: (1-math.exp(-t["Tenor"]*0.0609))/(t["Tenor"]*0.0609), 1).to_numpy()
+    # loading 2
     temp = table.apply(lambda t: (1-math.exp(-t["Tenor"]*0.0609))/(t["Tenor"]*0.0609)-math.exp(-t["Tenor"]*0.0609), 1).to_numpy()
     X = np.append([X], [temp], axis=0).transpose()
+    # run regression and save coefficients
     reg = linear_model.LinearRegression()
     reg.fit(X, table["YTM"].to_numpy().reshape(-1, 1))
     thetas = np.array([reg.intercept_[0], reg.coef_[0][0], 1/0.0609, reg.coef_[0][1], 1/0.0609])
@@ -185,7 +188,8 @@ def init_points(lb, ub, size, cnstrt=None, distr=None):
         distr = partial(distr, lb=lb, ub=ub, scale=1)
     x = distr(size)
     x = np.tile(lb, (size, 1)) + np.multiply(x, np.tile((ub-lb), (size, 1)))
-    # correct the ones not satisfying constraints
+    # correct the ones not satisfying constraints excluding the first one (best guess) I believe was not necessary,
+    # but still done to not get stuck in an endless while
     for i in range(1, size):
         while np.all(cnstrt(x[i, ]) < 0):
             x[i, ] = distr(1)
@@ -200,7 +204,7 @@ def uneven_distr(size, where, lb, ub, scale=1):
     uniform distribution is used. All np.inf will result in uniform distr.
 
     """
-    # np.inf where no info
+    # np.inf where no info should be supplied to generate uniform variables
     where_unit = (where-lb)/(ub-lb)
     result = np.zeros([size, len(where)])
     for i in range(len(where_unit)):
@@ -219,7 +223,23 @@ def uneven_distr(size, where, lb, ub, scale=1):
 # !!!!!!!!!!!!!!
 """ All optimizers defined here take same inputs. objective function, lower, upper bounds, debug parameter,
     constraints, maximum number of iterations, swarmsize, starting points, stopping value of obj, and 
-    list of indices of the important constraints (beta0 and taus)"""
+    list of indices of the important constraints (beta0 and taus)
+    
+    obj - the function to minimize, already should be of 1 argument
+    low, high - lower and higher bounds respectively
+    debug - debug argument for algorithms that have one 
+    f_ieqcons - constraints that are in the form c(theta) >= 0
+    maxiter - amount of iterations before stopping
+    swarmsize - number of points used in optimization
+    st_points - starting points generated in advance
+    strat - only used for differetial evolution
+    stopping - threshold to save the fast optimization result
+    mask - important constraints
+    
+    Adjusted for different algorithms inside their respective functions e.g. dual annealing will use 14*maxiter
+    results are [argmin(1) obj(), min(1) obj(), argmin(2) obj(), time(2)] where first two relate to full optimization
+    and the other two to threshold one
+    """
 # !!!!!!!!!!!!!!
 def diff_evo(obj, low, high, debug, f_ieqcons, maxiter, swarmsize, st_points, strat="best1bin", stopping=0,
              mask=[0,2]):

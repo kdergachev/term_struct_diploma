@@ -51,7 +51,7 @@ def bound_theta(theta, low, high, constr):
 
 def on_the_run(table, now, life=1.5, age=60):
     """
-    Returns a mask of assets that are not too off-the-run
+    Returns a mask of assets that are not too off-the-run based on life and age
 
     """
 
@@ -182,7 +182,7 @@ def get_results(algos,
             timer = time.process_time_ns()
             res = alg(obj, low, high,
                       debug=False, f_ieqcons=con, maxiter=miter, swarmsize=pointsamt, st_points=start,
-                      stopping=stopping * 0.05 * _correction*train.shape[0], mask=mask)
+                      stopping=stopping*_correction*train.shape[0], mask=mask)
             timer = time.process_time_ns() - timer
 
             if res[1] >= 1e+10: #failure to get any results
@@ -311,7 +311,7 @@ a = get_results(algdict,
                 miter=200,
                 weight=True,
                 save_st=True,
-                stopping=1,
+                stopping=0.2,
                 do_plots=False,
                 folder="past_points_price_NSS_w_double",
                 _where=r"D:\dipl")
@@ -329,7 +329,7 @@ a = get_results(algdict,
                 miter=200,
                 weight=True,
                 save_st=True,
-                stopping=1,
+                stopping=0.2,
                 do_plots=False,
                 folder="random_points_price_NSS_w_double",
                 _where=r"D:\dipl")
@@ -347,7 +347,7 @@ a = get_results(algdict,
                 miter=200,
                 weight=True,
                 save_st=True,
-                stopping=1,
+                stopping=0.2,
                 do_plots=False,
                 folder="DL_points_price_NSS_w_double",
                 _where=r"D:\dipl")

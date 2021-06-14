@@ -79,6 +79,7 @@ def pv(rate, cpn, par, tadj):
     given a rate , coupon amount, par value and list of when the coupons are paid returns present value of said bond
     rate can be both constant for YTM and a function of time for NS, NSS... runs
     """
+
     if not hasattr(rate, "__call__"):
         r = lambda x: rate
     else:
@@ -191,7 +192,7 @@ if __name__ == "__main__":
         test = test[["Issuer Name", "Cpn", "Par Amt", "Time Adj", "Midpoint", "YTM", "Tenor", "Duration"]]
         name = "D:/dipl/data_mod/" + i + ".xlsx"
         test.to_excel(name)
-        # this was used to ensure there are any non 100$ par securities
+        # this was used to ensure there are no non 100$ par securities
         if (test["Par Amt"] == 100).all():
             pass
         else:
